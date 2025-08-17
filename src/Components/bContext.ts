@@ -1,17 +1,25 @@
-import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, Mesh, MeshBuilder } from "@babylonjs/core";
+import { Engine, Scene, ArcRotateCamera, Vector3, HemisphericLight, Mesh, MeshBuilder, Camera } from "@babylonjs/core";
 
 /**
  * Babylon.js context wrapper.
  */
 class BabylonContext {
+
     private bScene: Scene;
     private bEngine: Engine;
     private renderCallbacks: Array<() => void> = [];
 
+    private camera: ArcRotateCamera;
+    private light: HemisphericLight;
 
     constructor(canvas: HTMLCanvasElement) {
         this.bEngine = new Engine(canvas, true);
         this.bScene = new Scene(this.bEngine);
+
+        this.camera =  new ArcRotateCamera("Camera", Math.PI / 2, Math.PI / 2, 2, Vector3.Zero(), this.bScene);
+        this.camera.attachControl(canvas, true);
+
+        this.light = new HemisphericLight("light1", new Vector3(1, 1, 0), this.bScene);
 
         // enable/disable the Inspector
         window.addEventListener("keydown", (ev) => {
@@ -71,6 +79,12 @@ class BabylonContext {
             this.bScene.render();
             this.renderCallbacks.forEach(callback => callback());
         });
+    }
+
+    public setZoom(level: number): void {
+        const minZoom = 0.1;
+        const maxZoom = 100;
+        this.camera.radius = Math.min(Math.max(level, minZoom), maxZoom);
     }
 }
 

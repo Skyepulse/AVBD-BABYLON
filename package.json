@@ -11,6 +11,7 @@
   "devDependencies": {
     "@babylonjs/core": "^8.23.1",
     "@babylonjs/inspector": "^8.23.1",
+    "gl-matrix": "^3.4.4",
     "typescript": "~5.8.3",
     "vite": "^7.1.2"
   }

@@ -1,7 +1,8 @@
 import CubeRigidbody from "./bCubeRigid";
 import BabylonContext
  from "./bContext";
-import { vec3 } from "gl-matrix";
+import { vec3, quat } from "gl-matrix";
+import { omegaFromQuatDelta, integrateQuat } from "./mathHelpers";
 
 class Solver
 {
@@ -74,41 +75,111 @@ class Solver
         }
     }
 
+    public applyImpulseAtCenterALL(J: vec3)
+    {
+        for (const rb of this.rigidbodies) {
+            this.applyImpulseAtPoint(rb.position, J, rb);
+        }
+    }
+
+    public applyImpulseAtRandomEdgeALL()
+    {
+        for (const rb of this.rigidbodies) {
+            const pointW = rb.getRandomEdgeWorld();
+
+            // Choose an impulse direction roughly perpendicular to r for stronger torque:
+            const r = vec3.subtract(vec3.create(), pointW, rb.position);
+            let rand = vec3.fromValues(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1);
+            if (vec3.squaredLength(rand) < 1e-10) rand = vec3.fromValues(1, 0, 0);
+            // make it perpendicular to r
+            const proj = vec3.scale(vec3.create(), r, (vec3.dot(rand, r) / Math.max(vec3.squaredLength(r), 1e-10)));
+            const dir = vec3.normalize(vec3.create(), vec3.subtract(vec3.create(), rand, proj));
+
+            const Jmag = 2.0; // tune
+            const J = vec3.scale(vec3.create(), dir, Jmag);
+
+            this.applyImpulseAtPoint(pointW, J, rb);
+        }
+    }
+
+    public applyImpulseAtPoint(pointWorld: vec3, J: vec3, rb: CubeRigidbody)
+    {
+        // Linear
+        vec3.scaleAndAdd(rb.velocity, rb.velocity, J, 1 / rb.mass);
+
+        // Angular
+        rb.refreshInertiaCaches();
+        const r = vec3.subtract(vec3.create(), pointWorld, rb.position);
+        const dL = vec3.cross(vec3.create(), r, J);
+        const dOmega = vec3.transformMat3(vec3.create(), dL, rb.Iinv); // Iinv is available after refresh inertia cache
+        vec3.add(rb.angularVelocity, rb.angularVelocity, dOmega);
+    }
+
     private step(dt: number): void {
         for (const rb of this.rigidbodies) {
             if (rb.isImmovable) continue;
 
-            // =========================
-            // LINEAR (momentum-centric)
-            // =========================
+            // POSITION BASED AVBD
+            vec3.copy(rb.initialPosition, rb.position);
+            quat.copy(rb.initialRotation, rb.rotation);
+
+            // -- Translational innertial prediction : x̂ = x + v dt + (g + F/m) dt^2
+            const externalAcceleration = vec3.clone(this.gravity);
+            vec3.scaleAndAdd(externalAcceleration, externalAcceleration, rb.forceAccum, 1 / rb.mass);
+            vec3.copy(rb.inertialPosition, rb.position);
+            vec3.scaleAndAdd(rb.inertialPosition, rb.inertialPosition, rb.velocity, dt);
+            vec3.scaleAndAdd(rb.inertialPosition, rb.inertialPosition, externalAcceleration, dt * dt);
+
+            // -- Rotational innertial prediction : α = I⁻¹ τ ; ω* = ω + α dt ; q̂ = integrateQuat(q, ω*, dt)
+            rb.refreshInertiaCaches();
+            const alpha = vec3.transformMat3(vec3.create(), rb.torqueAccum, rb.Iinv);
+            const omegaPredict = vec3.scaleAndAdd(vec3.create(), rb.angularVelocity, alpha, dt);
+            integrateQuat(rb.rotation, omegaPredict, dt, rb.inertialRotation);
+
+            // -- Adaptive Warmstarting
+            const prevVelocity = rb.previousVelocities.length > 0 ? rb.previousVelocities[rb.previousVelocities.length - 1] : rb.velocity;
+            const accel = vec3.scale(vec3.create(), vec3.subtract(vec3.create(), rb.velocity, prevVelocity), 1 / Math.max(dt, 1e-6));
+            const gLen = vec3.length(this.gravity);
+            let accelWeight = 0;
+            if (gLen > 0) {
+                const gDir = vec3.scale(vec3.create(), this.gravity, 1 / gLen);
+                const accelExt = vec3.dot(accel, gDir);
+                accelWeight = Math.max(0, Math.min(1, accelExt / gLen));
+                if (!isFinite(accelWeight)) accelWeight = 0;
+            }
+
+            vec3.copy(rb.position, rb.initialPosition);
+            vec3.scaleAndAdd(rb.position, rb.position, rb.velocity, dt);
+            vec3.scaleAndAdd(rb.position, rb.position, this.gravity, accelWeight * dt * dt);
+        }
+
+        // -- SOLVER LOOP --
+        for (const rb of this.rigidbodies)
+        {
+            if (rb.isImmovable) continue;
+            vec3.copy(rb.position, rb.inertialPosition);
+            quat.copy(rb.rotation, rb.inertialRotation);
+        }
+
+        // -- End of step velocities:
+        for (const rb of this.rigidbodies) {
             rb.previousVelocities.push(vec3.clone(rb.velocity));
             if (rb.previousVelocities.length > 10) rb.previousVelocities.shift();
-
-            // p += (m g) dt
-            vec3.scaleAndAdd(rb.linearMomentum, rb.linearMomentum, this.gravity, rb.mass * dt);
-            // v = p / m
-            vec3.scale(rb.velocity, rb.linearMomentum, 1 / rb.mass);
-            // x += v dt
-            vec3.scaleAndAdd(rb.position, rb.position, rb.velocity, dt);
-
-            // -------------------------
-            // ANGULAR (torque → L → ω)
-            // -------------------------
             rb.previousAngularVelocities.push(vec3.clone(rb.angularVelocity));
             if (rb.previousAngularVelocities.length > 10) rb.previousAngularVelocities.shift();
 
-            // 1) L ← L + τ dt
-            if (vec3.squaredLength(rb.torqueAccum) > 0) {
-                vec3.scaleAndAdd(rb.angularMomentum, rb.angularMomentum, rb.torqueAccum, dt);
+            if (!rb.isImmovable) {
+                // linear v = (x - x_initial) / dt
+                vec3.scale(
+                rb.velocity,
+                vec3.subtract(vec3.create(), rb.position, rb.initialPosition),
+                1 / dt
+                );
+                // angular ω from quaternion delta
+                omegaFromQuatDelta(rb.initialRotation, rb.rotation, dt, rb.angularVelocity);
             }
 
-            // 2) ω = Iinv_world · L
-            rb.angularVelocity = vec3.transformMat3(vec3.create(), rb.angularMomentum, rb.Iinv);
-
-            // 3) integrate quaternion using ω
-            rb.integrateOrientation(dt);
-
-            // Clear per-step accumulators
+            // clear per-step external accumulators
             rb.clearAccumulators();
         }
     }

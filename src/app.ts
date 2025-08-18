@@ -73,53 +73,24 @@ class App {
 
         bContext.setZoom(50);
 
-        window.addEventListener("keydown", (e) => {
-            // Upward impulse at center (instant jump)
-            if (e.code === "Space") {
-                const center = vec3ToBabylon(cube1.position);               // world point (center)
-                const J = new Vector3(0, cube1.mass * 20, 0);                 // tweak magnitude
-                cube1.applyImpulse(center, J);
-            }
-
-            // Torque-y impulse at a random edge point
-            if (e.key.toLowerCase() === "r") {
-                // Pick a random edge in LOCAL space: two axes at ±half, one axis = 0
-                const hx = cube1.size[0] * 0.5;
-                const hy = cube1.size[1] * 0.5;
-                const hz = cube1.size[2] * 0.5;
-
-                const zeroAxis = Math.floor(Math.random() * 3); // 0=x,1=y,2=z
-                const sx = Math.random() < 0.5 ? -1 : 1;
-                const sy = Math.random() < 0.5 ? -1 : 1;
-                const sz = Math.random() < 0.5 ? -1 : 1;
-
-                const localEdge = vec3.fromValues(
-                    zeroAxis === 0 ? 0 : sx * hx,
-                    zeroAxis === 1 ? 0 : sy * hy,
-                    zeroAxis === 2 ? 0 : sz * hz
-                );
-
-                // Transform edge to WORLD space: p = x + R * localEdge
-                const offsetW = vec3.create();
-                vec3.transformQuat(offsetW, localEdge, cube1.rotation);
-                const pointW = vec3.create();
-                vec3.add(pointW, cube1.position, offsetW);
-
-                // Tangential impulse direction: t ⟂ radius
-                const n = vec3.normalize(vec3.create(), offsetW);
-                const arbitrary = Math.abs(n[1]) < 0.9 ? vec3.fromValues(0, 1, 0) : vec3.fromValues(1, 0, 0);
-                const tangent = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), n, arbitrary));
-
-                // Impulse magnitude (tweak to taste)
-                const Jmag = cube1.mass * 2;
-                const Jw = vec3.scale(vec3.create(), tangent, Jmag);
-
-                // Apply off-center impulse → adds angular + some linear impulse
-                cube1.applyImpulse(vec3ToBabylon(pointW), vec3ToBabylon(Jw));
-            }
-            });
-
         scene.onBeforeRenderObservable.add(() => solver.update());
+
+        // APPLY IMPULSE WITH SPACE, RANDOM TORQUE WITH R ON SELECTED EDGE (DEBUG DRAW SELECTED EDGE)
+
+        window.addEventListener("keydown", (ev) => {
+
+            if (ev.code === "Space") {
+                ev.preventDefault(); // Apparently avoids scrolling
+
+                const JMagnitude = 5.0;
+                const J = vec3.fromValues(0,JMagnitude,0);
+                solver.applyImpulseAtCenterALL(J);
+            }
+
+            if (ev.key === "r" || ev.key === "R") {
+                solver.applyImpulseAtRandomEdgeALL();
+            }
+        });
     }
 }
 new App();

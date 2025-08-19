@@ -1,16 +1,18 @@
-import { Quaternion, Vector3 } from "@babylonjs/core";
+import { Quaternion, StandardMaterial, Vector3 } from "@babylonjs/core";
 import {
   Scene,
   Mesh,
   AbstractMesh,
   MeshBuilder,
   Material,
+  Color3,
+  TransformNode
 } from "@babylonjs/core";
 
 import { mat3, vec3, mat4, quat } from "gl-matrix";
 import type bForce from "./bForce";
 
-import { mat3Diag, quatFromBabylon, vec3FromBabylon, vec3ToBabylon, quatToBabylon, integrateQuat, omegaFromQuatDelta } from "./mathHelpers";
+import { mat3Diag, quatFromBabylon, vec3FromBabylon, vec3ToBabylon, quatToBabylon, integrateQuat } from "./mathHelpers";
 
 //================================//
 class CubeRigidbody
@@ -46,10 +48,17 @@ class CubeRigidbody
     public readonly friction: number;
     public readonly detectionRadius: number;
 
+    private _root?: TransformNode;
     private _mesh?: AbstractMesh;
     private static _sharedBox?: Mesh;
-    private material: Material | null;
-    private renderMethod: string = "unique";
+    private _material: Material | null;
+    private _renderMethod: string = "unique";
+
+    private _vertexMeshes: AbstractMesh[] = [];
+    private _detectionWireframe: AbstractMesh | null = null;
+    private static _debugMaterial: Material | null = null;
+    private static _debugWireframeMaterial: Material | null = null;
+    private isDebug: boolean = false;
 
     //================================//
     public static setInstanceMaterial(material: Material): void {
@@ -60,6 +69,7 @@ class CubeRigidbody
 
     //================================//
     constructor(
+        scene: Scene,
         size: Vector3,
         density: number,
         friction: number,
@@ -77,11 +87,11 @@ class CubeRigidbody
         const mass = density * volume;
         this.mass = mass;
         this.friction = friction;
-        this.detectionRadius = vec3.length(this.size) * 0.5;
+        this.detectionRadius = 0.5 * Math.sqrt(this.size[0] ** 2 + this.size[1] ** 2 + this.size[2] ** 2);
 
         // render
-        this.material = material;
-        this.renderMethod = renderMethod;
+        this._material = material;
+        this._renderMethod = renderMethod;
 
         // -------- kinematic state --------
         this.position = vec3FromBabylon(position);
@@ -115,6 +125,89 @@ class CubeRigidbody
         this.rotationMatrix = mat4.create();
         this.Iinv = mat3.create();
         this.refreshInertiaCaches();
+
+        // Edge Meshes
+        this.initializeMesh(scene);
+        this.createDebugMeshes(scene);
+    }
+
+    //================================//
+    private createDebugMeshes(scene: Scene)
+    {
+        if (this.isImmovable) return;
+
+        if (!CubeRigidbody._debugMaterial) 
+        {
+            const mat = new StandardMaterial("debugMaterial", scene);
+            mat.emissiveColor = new Color3(1, 0, 0);
+            mat.disableLighting = true;
+            CubeRigidbody._debugMaterial = mat;
+        }
+
+        if (!CubeRigidbody._debugWireframeMaterial)
+        {
+            const mat = new StandardMaterial("debugWireframeMaterial", scene);
+            mat.emissiveColor = new Color3(0, 0.8, 0.2);
+            mat.wireframe = true;
+            mat.disableLighting = true;
+            CubeRigidbody._debugWireframeMaterial = mat;
+        }
+
+        this._vertexMeshes = [];
+        for (let i = 0; i < 8; i++)
+        {
+            const edgeMesh = MeshBuilder.CreateSphere("_debugEdge" + i, { diameter: 0.3 }, scene);
+            edgeMesh.material = CubeRigidbody._debugMaterial;
+            edgeMesh.isVisible = false;
+            this._vertexMeshes.push(edgeMesh);
+        }
+
+        this._detectionWireframe = MeshBuilder.CreateSphere("detectionWireframe", {diameter:this.detectionRadius * 2, segments: 2}, scene);
+        this._detectionWireframe.material = CubeRigidbody._debugWireframeMaterial;
+        this._detectionWireframe.isVisible = false;
+
+        // Parent debug meshes to the main root transform node if it exists
+        if (this._root) {
+            for (const m of this._vertexMeshes) m.parent = this._root;
+            this._detectionWireframe.parent = this._root;
+        }
+
+        const hx = this.size[0] / 2, hy = this.size[1] / 2, hz = this.size[2] / 2;
+        const allVertexPositions = [1, -1].flatMap(ix =>
+            [1, -1].flatMap(iy =>
+            [1, -1].map(iz => new Vector3(ix * hx, iy * hy, iz * hz))
+            )
+        );
+
+        for(let i = 0; i < allVertexPositions.length; i++) {
+            this._vertexMeshes[i].position.copyFrom(allVertexPositions[i]);
+        }
+
+        this._detectionWireframe.position = new Vector3(0, 0, 0);
+    }
+
+    //================================//
+    public isConstrainedTo(bodyB: CubeRigidbody): boolean
+    {
+        for (const force of this.forces)
+        {
+            if ((force.bodyA === this && force.bodyB === bodyB) || (force.bodyB === this && force.bodyA === bodyB))
+                return true;
+        }
+        return false;
+    }
+
+    //================================//
+    public toggleDebug(b: boolean)
+    {
+        if (this.isDebug === b || !this._detectionWireframe) return;
+
+        this.isDebug = b;
+
+        for(const debugMesh of this._vertexMeshes)
+            debugMesh.isVisible = b;
+
+        this._detectionWireframe.isVisible = b;
     }
 
     //================================//
@@ -210,18 +303,37 @@ class CubeRigidbody
     }
 
     //================================//
-    public draw(scene: Scene): void
+    public addbForce(bForce: bForce): void
     {
+        this.forces.push(bForce);
+    }
+
+    //================================//
+    public removebForce(bForce: bForce): void
+    {
+        this.forces = this.forces.filter(f => f !== bForce);
+    }
+
+    //================================//
+    public initializeMesh(scene: Scene): void
+    {
+        if(!this._root)
+        {
+            this._root = new TransformNode("rb-root", scene);
+            this._root.rotationQuaternion = quatToBabylon(this.rotation);
+            this._root.position.copyFrom(vec3ToBabylon(this.position));
+        }
+
         if (!this._mesh)
         {
-            if (this.renderMethod === "instance") {
+            if (this._renderMethod === "instance") {
                 if (!CubeRigidbody._sharedBox) {
                     throw new Error("Shared box mesh not created. Make sure to set the instance material.");
                 }
                 this._mesh = CubeRigidbody._sharedBox.createInstance("rb-inst");
             } else {
                 this._mesh = MeshBuilder.CreateBox("rb-unique", { size: 1 }, scene);
-                this._mesh.material = this.material;
+                this._mesh.material = this._material;
             }
 
             if(!this._mesh)
@@ -229,14 +341,18 @@ class CubeRigidbody
                 console.warn("Mesh not created correctly");
                 return;
             }
-            this._mesh.rotationQuaternion = quatToBabylon(this.rotation);
+            this._mesh.parent = this._root;
         }
+    }
+
+    //================================//
+    public draw(): void
+    {
+        if (!this._mesh || !this._root) return;
 
         // position
-        this._mesh.position.copyFrom(vec3ToBabylon(this.position));
-
-        // rotation (Babylon quaternion already)
-        this._mesh.rotationQuaternion!.copyFrom(quatToBabylon(this.rotation));
+        this._root.position.copyFrom(vec3ToBabylon(this.position));
+        this._root.rotationQuaternion!.copyFrom(quatToBabylon(this.rotation));
 
         // scale box from unit size to your dimensions
         this._mesh.scaling.copyFrom(vec3ToBabylon(this.size));

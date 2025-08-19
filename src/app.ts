@@ -21,11 +21,13 @@ class App {
         const solver = Solver.getInstance(bContext);
 
         const scene = bContext.getScene();
+        let debug = false;
 
         // Green
         const floorMaterial = new StandardMaterial("floorMaterial", bContext.getScene());
         floorMaterial.diffuseColor = new Color3(0, 1, 0);
         const floor = new CubeRigidbody(
+            scene,
             new Vector3(10, 1, 10),  // size
             0,                       // density → mass 0
             0.8,                     // friction (unused for now)
@@ -44,6 +46,7 @@ class App {
         CubeRigidbody.setInstanceMaterial(cubeMaterial);
 
         const cube1 = new CubeRigidbody(
+            scene,
             new Vector3(1, 1, 1),
             1,                        // density
             0.5,
@@ -56,6 +59,7 @@ class App {
         );
 
         const cube2 = new CubeRigidbody(
+            scene,
             new Vector3(1, 1, 1),
             1,                        // density
             0.5,
@@ -89,6 +93,11 @@ class App {
 
             if (ev.key === "r" || ev.key === "R") {
                 solver.applyImpulseAtRandomEdgeALL();
+            }
+
+            if(ev.key === "d" || ev.key === "D") {
+                solver.toggleDebug(!debug);
+                debug = !debug;
             }
         });
     }

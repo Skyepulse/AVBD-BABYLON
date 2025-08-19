@@ -3,6 +3,7 @@ import BabylonContext
  from "./bContext";
 import { vec3, quat } from "gl-matrix";
 import { omegaFromQuatDelta, integrateQuat } from "./mathHelpers";
+import bForce from "./bForce";
 
 class Solver
 {
@@ -50,7 +51,6 @@ class Solver
 
     public update(): void
     {
-        const scene = this.context.getScene();
         const engine = this.context.getEngine();
 
         if (this.fixedDt != null) {
@@ -71,7 +71,7 @@ class Solver
 
         // draw
         for (const rb of this.rigidbodies) {
-            rb.draw(scene);
+            rb.draw();
         }
     }
 
@@ -114,8 +114,34 @@ class Solver
         const dOmega = vec3.transformMat3(vec3.create(), dL, rb.Iinv); // Iinv is available after refresh inertia cache
         vec3.add(rb.angularVelocity, rb.angularVelocity, dOmega);
     }
+    
+    //================================//
+    public toggleDebug(b: boolean)
+    {
+        for (const rb of this.rigidbodies) {
+            rb.toggleDebug(b);
+        }
+    }
 
+    //================================//
     private step(dt: number): void {
+
+        // Naive broadphase collision detection
+        for (let i = 0; i < this.rigidbodies.length; i++)
+        {
+            const bodyA = this.rigidbodies[i];
+            for(let j = i + 1; j < this.rigidbodies.length; j++)
+            {
+                const bodyB = this.rigidbodies[j];
+                if (bodyA === bodyB) continue;
+
+                const dp = vec3.subtract(vec3.create(), bodyA.position, bodyB.position);
+                const r = bodyA.detectionRadius + bodyB.detectionRadius;
+                if (vec3.dot(dp, dp) <= r * r && !bodyA.isConstrainedTo(bodyB))
+                    new bForce(bodyA, bodyB);
+            }
+        }
+
         for (const rb of this.rigidbodies) {
             if (rb.isImmovable) continue;
 
